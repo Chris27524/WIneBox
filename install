@@ -1,0 +1,149 @@
+#!/bin/bash
+
+set -e
+
+echo "Updating Termux packages..."
+pkg update -y
+pkg upgrade -y
+pkg install proot-distro wget tar pulseaudio termux-x11 x11-repo unzip -y
+
+echo "Installing Debian via proot-distro..."
+proot-distro install debian
+
+echo "Entering Debian environment..."
+proot-distro login debian <<'EOF'
+
+set -e
+
+echo "Updating Debian packages..."
+dpkg --add-architecture i386
+apt update
+apt upgrade -y
+apt install wget curl gnupg2 software-properties-common -y
+
+# Prompt user for box86 or box64
+echo ""
+echo "Select Box architecture to install:"
+echo "1) Box86 (32-bit)"
+echo "2) Box64 (64-bit)"
+read -rp "Choice [1/2]: " BOXARCH
+
+if [ "$BOXARCH" = "1" ]; then
+    echo "Installing Box86 (32-bit)..."
+    # Add Box86 repo & install
+    wget https://ryanfortner.github.io/box86-debs/box86.list -O /etc/apt/sources.list.d/box86.list
+    curl -fsSL https://ryanfortner.github.io/box86-debs/KEY.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/box86-debs-archive-keyring.gpg
+    apt update
+    apt install box86 -y
+elif [ "$BOXARCH" = "2" ]; then
+    echo "Installing Box64 (64-bit)..."
+    wget https://ryanfortner.github.io/box64-debs/box64.list -O /etc/apt/sources.list.d/box64.list
+    curl -fsSL https://ryanfortner.github.io/box64-debs/KEY.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/box64-debs-archive-keyring.gpg
+    apt update
+    apt install box64 -y
+else
+    echo "Invalid choice, exiting."
+    exit 1
+fi
+
+echo "Installing Wine and dependencies..."
+dpkg --add-architecture amd64
+apt update
+apt install wine64 wine32 -y
+
+echo "Downloading and installing DXVK (D3D11 support)..."
+DXVK_VER="2.0"
+wget https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VER}/dxvk-${DXVK_VER}.tar.gz
+tar -xvzf dxvk-${DXVK_VER}.tar.gz
+cp dxvk-${DXVK_VER}/x64/*.dll ~/.wine/drive_c/windows/system32/ || true
+cp dxvk-${DXVK_VER}/x32/*.dll ~/.wine/drive_c/windows/syswow64/ || true
+
+echo "Setting environment variables..."
+echo "export WINEPREFIX=\$HOME/.wine" >> ~/.bashrc
+echo "export WINEARCH=win64" >> ~/.bashrc
+
+echo "Installing unzip (required for winebox-menu)..."
+apt install unzip -y
+
+echo "Downloading WineBox menu script..."
+cat > ~/winebox-menu.sh << 'EOM'
+#!/bin/bash
+
+WINEBOX_PROCESS_NAME="wine"
+
+start_termux_x11() {
+    if ! pgrep -f termux-x11 >/dev/null; then
+        echo "Starting termux-x11 server..."
+        termux-x11 &>/dev/null &
+        sleep 3
+    fi
+    export DISPLAY=:0
+}
+
+start_winebox() {
+    echo "Starting WineBox..."
+    start_termux_x11
+    wine your_app.exe &
+    WINEBOX_PID=$!
+    echo "WineBox started with PID $WINEBOX_PID"
+    read -p "Press Enter to return to menu..."
+}
+
+kill_winebox() {
+    echo "Killing WineBox process..."
+    if pkill -f "$WINEBOX_PROCESS_NAME"; then
+        echo "WineBox killed."
+    else
+        echo "No WineBox running."
+    fi
+    read -p "Press Enter to return to menu..."
+}
+
+download_d3d11() {
+    echo "DXVK installed via install script."
+    read -p "Press Enter to return to menu..."
+}
+
+d3d_menu() {
+    while true; do
+        clear
+        echo "=== D3D Configuration ==="
+        echo "1) Info on D3D11 (DXVK installed)"
+        echo "2) Back"
+        read -p "Choose: " opt
+        case "$opt" in
+            1) download_d3d11 ;;
+            2) break ;;
+            *) echo "Invalid"; sleep 1 ;;
+        esac
+    done
+}
+
+while true; do
+    clear
+    echo "=== WineBox Menu ==="
+    echo "1) Start WineBox"
+    echo "2) Kill WineBox"
+    echo "3) D3D Configuration"
+    echo "4) Exit"
+    read -p "Choose: " choice
+    case "$choice" in
+        1) start_winebox ;;
+        2) kill_winebox ;;
+        3) d3d_menu ;;
+        4) exit 0 ;;
+        *) echo "Invalid"; sleep 1 ;;
+    esac
+done
+EOM
+
+chmod +x ~/winebox-menu.sh
+
+echo "Setup complete inside Debian!"
+echo "Run with: bash ~/winebox-menu.sh"
+EOF
+
+echo "Installation complete! Run your Debian with:"
+echo "proot-distro login debian"
+echo "Then run your WineBox menu:"
+echo "bash ~/winebox-menu.sh"
